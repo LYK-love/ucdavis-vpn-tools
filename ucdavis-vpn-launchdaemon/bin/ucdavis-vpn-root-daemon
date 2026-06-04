@@ -49,6 +49,7 @@ PING_TARGET="${PING_TARGET:-}"
 PING_TARGETS="${PING_TARGETS:-}"
 PING_COUNT="${PING_COUNT:-2}"
 PING_TIMEOUT_MS="${PING_TIMEOUT_MS:-1500}"
+PING_BIN="${PING_BIN:-/sbin/ping}"
 HEALTH_CHECK_MODE="${HEALTH_CHECK_MODE:-auto}"
 HEALTH_MIN_SUCCESS="${HEALTH_MIN_SUCCESS:-1}"
 TCP_TARGET="${TCP_TARGET:-}"
@@ -698,7 +699,7 @@ repair_stale_vpn_server_route() {
 ping_target_ok() {
   local target="$1"
   [[ -n "$target" ]] || return 1
-  /sbin/ping -q -c "$PING_COUNT" -W "$PING_TIMEOUT_MS" "$target" >/dev/null 2>&1
+  "$PING_BIN" -q -c "$PING_COUNT" -W "$PING_TIMEOUT_MS" "$target" >/dev/null 2>&1
 }
 
 split_tcp_target() {

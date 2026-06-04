@@ -22,6 +22,14 @@ assert_eq() {
 }
 
 CONFIG_FILE="$TMP_DIR/config.env"
+FAKE_PING="$TMP_DIR/fake-ping"
+cat > "$FAKE_PING" <<'EOF'
+#!/bin/zsh
+target="${@: -1}"
+[[ "$target" == "127.0.0.1" ]]
+EOF
+chmod 0755 "$FAKE_PING"
+
 cat > "$CONFIG_FILE" <<EOF
 LABEL=local.ucdavis-openconnect-daemon-test
 USER_NAME=${USER}
@@ -34,6 +42,7 @@ SSH_HOST_ALIAS=
 PING_TARGET=127.0.0.1
 PING_COUNT=1
 PING_TIMEOUT_MS=200
+PING_BIN=$FAKE_PING
 HEALTH_CHECK_MODE=ping
 TCP_TARGET=
 TCP_PORT=22

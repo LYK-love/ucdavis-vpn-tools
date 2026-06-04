@@ -174,6 +174,19 @@ install_missing_dependencies() {
   fi
 }
 
+ensure_sudo_ready() {
+  sudo -n true >/dev/null 2>&1 && return 0
+
+  if [[ ! -t 0 ]]; then
+    print -u2 "setup.sh needs an interactive Terminal so sudo can ask for your macOS password."
+    print -u2 "Open Terminal, cd to this repository, and run ./setup.sh there."
+    exit 1
+  fi
+
+  print "Checking sudo access for LaunchDaemon installation."
+  sudo -v
+}
+
 apply_common_config() {
   local file="$1"
   set_config_value "$file" UC_DAVIS_EMAIL "$SETUP_EMAIL"
@@ -209,6 +222,7 @@ print "  4. optionally start automatic reconnect now"
 print
 
 install_missing_dependencies
+ensure_sudo_ready
 
 existing_email="$(existing_config_value "$USER_CONFIG_FILE" UC_DAVIS_EMAIL 2>/dev/null || true)"
 [[ "$existing_email" == "your_email@ucdavis.edu" ]] && existing_email=""
