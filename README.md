@@ -20,6 +20,19 @@ openconnect --protocol=nc
 Your school or department may use a different realm, URL, or policy. Treat the
 defaults as examples and review the generated config before enabling any daemon.
 
+## Split Tunnel and System Proxies
+
+This tool is designed as a split-tunnel VPN: only UC Davis internal routes are
+sent through the VPN, while ordinary internet traffic stays on the physical
+network route. It can be used together with system proxy tools such as Clash or
+Shadowrocket.
+
+See the technical verification:
+
+- [Split tunnel verification](docs/split-tunnel-proof.md)
+- [中文版本](docs/split-tunnel-proof.zh.md)
+- [English version](docs/split-tunnel-proof.en.md)
+
 ## What Is Not Committed
 
 This repository should not contain:
