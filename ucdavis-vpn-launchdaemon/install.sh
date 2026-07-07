@@ -153,6 +153,7 @@ ensure_config_default TCP_PORT 22
 ensure_config_default TCP_TIMEOUT_SECONDS 3
 ensure_config_default MAX_BROWSER_SESSION_ATTEMPTS 2
 ensure_config_default CONTROL_POLL_SECONDS 1
+ensure_config_default COOKIE_HELPER_TIMEOUT_SECONDS 300
 ensure_config_default PRESERVE_DEFAULT_ROUTE 1
 ensure_config_default DEFAULT_ROUTE_RESTORE_DELAY_SECONDS 2
 ensure_config_default VPN_SPLIT_ROUTES '"169.237.0.0/16 128.120.0.0/16"'
@@ -178,6 +179,11 @@ fi
 if /usr/bin/grep -q '^MAX_BROWSER_SESSION_ATTEMPTS=3$' "$CONFIG_FILE"; then
   /usr/bin/sed -i '' 's/^MAX_BROWSER_SESSION_ATTEMPTS=3$/MAX_BROWSER_SESSION_ATTEMPTS=2/' "$CONFIG_FILE"
   print "Updated default config: MAX_BROWSER_SESSION_ATTEMPTS=2"
+fi
+
+if /usr/bin/grep -q '^CONNECT_ON_START=1$' "$CONFIG_FILE"; then
+  /usr/bin/sed -i '' 's/^CONNECT_ON_START=1$/CONNECT_ON_START=0/' "$CONFIG_FILE"
+  print "Updated default config: CONNECT_ON_START=0 (manual 'ucdavis-vpnctl on' required after reboot)."
 fi
 
 install -m 0644 "$PLIST_TEMPLATE" "$PLIST_FILE"

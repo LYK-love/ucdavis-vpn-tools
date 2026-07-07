@@ -4,12 +4,17 @@ set -euo pipefail
 CONFIG_FILE="/Library/Application Support/ucdavis-vpn-daemon/config.env"
 COMMAND="status"
 PROGRAM_NAME="${0:t}"
+WAIT_FOR_CONNECT="${UCDAVIS_VPNCTL_WAIT:-0}"
 
 while (( $# > 0 )); do
   case "$1" in
     --config)
       CONFIG_FILE="$2"
       shift 2
+      ;;
+    --wait)
+      WAIT_FOR_CONNECT=1
+      shift
       ;;
     -h|--help|help)
       COMMAND="help"
@@ -35,19 +40,19 @@ fi
 
 usage() {
   cat <<EOF
-Usage: $PROGRAM_NAME [--config path] <command>
+Usage: $PROGRAM_NAME [--config path] [--wait] <command>
 
 No-sudo commands:
   status       Print VPN status.
   doctor       Print dependency and config checks.
   set-password Prompt for the VPN password and store it in macOS Keychain.
-  connect      Clear retry block and connect now.
+  connect      Clear retry block and start connecting in the background.
   disconnect   Disconnect the tunnel, leaving auto reconnect enabled.
   logout       Log out the tunnel session, leaving auto reconnect enabled.
   pause        Pause automatic reconnect.
   resume       Resume automatic reconnect.
   off|disable  Pause automatic reconnect and log out the tunnel.
-  on|enable    Resume automatic reconnect and connect now.
+  on|enable    Resume automatic reconnect and start connecting in the background.
   once         Ask the daemon to run one monitor pass.
 
 Config:
@@ -89,6 +94,28 @@ request_timeout_seconds() {
   esac
 }
 
+request_waits_for_response() {
+  case "$1" in
+    connect|enable|on)
+      [[ "$WAIT_FOR_CONNECT" == "1" ]]
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+request_submitted_message() {
+  case "$1" in
+    connect|enable|on)
+      print "Connection requested. Chrome may open for UC Davis authentication."
+      print "Use '$PROGRAM_NAME status' to watch progress, or '$PROGRAM_NAME off' from another terminal to stop it."
+      ;;
+    *)
+      ;;
+  esac
+}
+
 response_output() {
   /usr/bin/awk '
     $0 == "output<<EOF" { in_output=1; next }
@@ -121,6 +148,11 @@ send_control_request() {
   } > "$tmp"
   chmod 0600 "$tmp" >/dev/null 2>&1 || true
   mv "$tmp" "$request"
+
+  if ! request_waits_for_response "$command"; then
+    request_submitted_message "$command"
+    return 0
+  fi
 
   timeout="$(request_timeout_seconds "$command")"
   waited=0

@@ -101,8 +101,11 @@ CONTROL_RESPONSE_DIR="${CONTROL_RESPONSE_DIR:-$STATE_DIR/control/responses}"
 CONTROL_POLL_SECONDS="${CONTROL_POLL_SECONDS:-1}"
 [[ "$CONTROL_POLL_SECONDS" == <-> ]] || CONTROL_POLL_SECONDS=1
 (( CONTROL_POLL_SECONDS > 0 )) || CONTROL_POLL_SECONDS=1
+COOKIE_HELPER_TIMEOUT_SECONDS="${COOKIE_HELPER_TIMEOUT_SECONDS:-300}"
+[[ "$COOKIE_HELPER_TIMEOUT_SECONDS" == <-> ]] || COOKIE_HELPER_TIMEOUT_SECONDS=300
 DAEMON_LOG_FILE="${DAEMON_LOG_FILE:-$LOG_DIR/daemon.log}"
 OPENCONNECT_LOG_FILE="${OPENCONNECT_LOG_FILE:-$LOG_DIR/openconnect.log}"
+CONTROL_INTERRUPT_COMMAND=""
 
 NODE_BIN="${NODE_BIN:-}"
 COOKIE_HELPER="${COOKIE_HELPER:-}"
@@ -208,6 +211,19 @@ pid_running() {
   kill -0 "$pid" >/dev/null 2>&1 || ps -p "$pid" -o pid= >/dev/null 2>&1
 }
 
+pid_command() {
+  local pid="$1"
+  /bin/ps -p "$pid" -o command= 2>/dev/null
+}
+
+daemon_pid_running() {
+  local pid="$1"
+  local command
+  pid_running "$pid" || return 1
+  command="$(pid_command "$pid" || true)"
+  [[ "$command" == *"$PROGRAM_NAME"* ]]
+}
+
 launchd_tracked_pid() {
   /bin/launchctl print "system/$LABEL" 2>/dev/null | /usr/bin/awk '
     /^[[:space:]]*pid = [0-9]+$/ { print $3; exit }
@@ -221,14 +237,34 @@ acquire_run_lock() {
   while ! mkdir "$RUN_LOCK_DIR" 2>/dev/null; do
     lock_pid=""
     [[ -f "$RUN_LOCK_DIR/pid" ]] && lock_pid="$(<"$RUN_LOCK_DIR/pid")"
-    if [[ "$lock_pid" == <-> ]] && pid_running "$lock_pid"; then
+    if [[ "$lock_pid" == <-> ]] && daemon_pid_running "$lock_pid"; then
       tracked_pid="$(launchd_tracked_pid || true)"
+      if [[ "$lock_pid" == "$self_pid" ]]; then
+        log "Removing self-referential daemon singleton lock for pid $self_pid."
+        rm -rf "$RUN_LOCK_DIR"
+        continue
+      fi
       if [[ "$tracked_pid" == "$lock_pid" && "$self_pid" != "$tracked_pid" ]]; then
         log "Daemon singleton lock is held by launchd-tracked pid $lock_pid; exiting duplicate launcher pid $self_pid."
         exit 0
       fi
+      if [[ -n "$tracked_pid" && "$tracked_pid" == "$self_pid" && "$lock_pid" != "$self_pid" ]]; then
+        local waited=0
+        log "Launchd-tracked daemon pid $self_pid is taking over singleton lock from untracked pid $lock_pid."
+        kill -TERM "$lock_pid" >/dev/null 2>&1 || true
+        while (( waited < 10 )) && daemon_pid_running "$lock_pid"; do
+          sleep 1
+          waited=$(( waited + 1 ))
+        done
+        if ! daemon_pid_running "$lock_pid"; then
+          log "Untracked daemon pid $lock_pid exited; removing stale singleton lock."
+          rm -rf "$RUN_LOCK_DIR"
+          continue
+        fi
+        log "Untracked daemon pid $lock_pid is still running after TERM; launcher pid $self_pid is standing by."
+      fi
       log "Another daemon loop is active as pid $lock_pid; launcher pid $self_pid is standing by."
-      while [[ "$lock_pid" == <-> ]] && pid_running "$lock_pid"; do
+      while [[ "$lock_pid" == <-> ]] && daemon_pid_running "$lock_pid"; do
         sleep "$CHECK_INTERVAL_SECONDS"
         [[ -f "$RUN_LOCK_DIR/pid" ]] && lock_pid="$(<"$RUN_LOCK_DIR/pid")" || lock_pid=""
       done
@@ -1032,6 +1068,58 @@ write_control_response() {
   mv "$tmp" "$response"
 }
 
+handle_control_interrupt_command() {
+  local command="$1"
+  case "$command" in
+    disable|off)
+      command_disable
+      ;;
+    pause)
+      command_pause
+      ;;
+    logout)
+      command_logout
+      ;;
+    disconnect)
+      command_disconnect
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+process_control_interrupt_requests() {
+  emulate -L zsh
+  setopt null_glob
+  local request owner id command output rc
+  for request in "$CONTROL_DIR"/*.request; do
+    [[ -f "$request" ]] || continue
+    command="$(control_request_field "$request" command)"
+    case "$command" in
+      disable|off|pause|logout|disconnect) ;;
+      *) continue ;;
+    esac
+    owner="$(/usr/bin/stat -f %u "$request" 2>/dev/null || true)"
+    if [[ -n "$USER_UID" && "$owner" != "$USER_UID" ]]; then
+      log "Ignoring control request not owned by uid $USER_UID: $request"
+      rm -f "$request"
+      continue
+    fi
+    id="${request:t:r}"
+    rm -f "$request"
+    if output="$(handle_control_interrupt_command "$command" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    write_control_response "$id" "$rc" "$output"
+    CONTROL_INTERRUPT_COMMAND="$command"
+    return 0
+  done
+  return 1
+}
+
 handle_control_command() {
   local command="$1"
   local old_command rc
@@ -1141,7 +1229,7 @@ wait_for_user_gui() {
 }
 
 run_cookie_helper() {
-  local helper_output helper_rc
+  local helper_output helper_rc helper_pid helper_started helper_elapsed
   [[ -n "$USER_NAME" && -n "$USER_UID" && -n "$USER_HOME" ]] || {
     log "USER_NAME, USER_UID, and USER_HOME must be configured."
     return 1
@@ -1177,22 +1265,49 @@ run_cookie_helper() {
 
   helper_output="$STATE_DIR/cookie-helper-output.$$"
   rm -f "$helper_output"
-  /bin/launchctl asuser "$USER_UID" /usr/bin/sudo -u "$USER_NAME" \
-    /usr/bin/env \
-      HOME="$USER_HOME" \
-      USER="$USER_NAME" \
-      LOGNAME="$USER_NAME" \
-      PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-      UCD_VPN_SERVER="$SERVER" \
-      UCD_VPN_EMAIL="$UC_DAVIS_EMAIL" \
-      UCD_VPN_KEYCHAIN_SERVICE="$KEYCHAIN_SERVICE" \
-      UCD_VPN_PROFILE_DIR="$CHROME_PROFILE_DIR" \
-      UCD_VPN_CDP_PORT="$CHROME_CDP_PORT" \
-      UCD_VPN_CHROME_APP="$CHROME_APP" \
-      UCD_VPN_CLOSE_WINDOW_AFTER_COOKIE="$CLOSE_WINDOW_AFTER_COOKIE" \
-      UCD_VPN_CLOSE_EXISTING_SESSIONS="$CLOSE_EXISTING_VPN_SESSIONS" \
-      "$NODE_BIN" "$COOKIE_HELPER" --json "$@" > "$helper_output"
-  helper_rc=$?
+  (
+    /bin/launchctl asuser "$USER_UID" /usr/bin/sudo -u "$USER_NAME" \
+      /usr/bin/env \
+        HOME="$USER_HOME" \
+        USER="$USER_NAME" \
+        LOGNAME="$USER_NAME" \
+        PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        UCD_VPN_SERVER="$SERVER" \
+        UCD_VPN_EMAIL="$UC_DAVIS_EMAIL" \
+        UCD_VPN_KEYCHAIN_SERVICE="$KEYCHAIN_SERVICE" \
+        UCD_VPN_PROFILE_DIR="$CHROME_PROFILE_DIR" \
+        UCD_VPN_CDP_PORT="$CHROME_CDP_PORT" \
+        UCD_VPN_CHROME_APP="$CHROME_APP" \
+        UCD_VPN_CLOSE_WINDOW_AFTER_COOKIE="$CLOSE_WINDOW_AFTER_COOKIE" \
+        UCD_VPN_CLOSE_EXISTING_SESSIONS="$CLOSE_EXISTING_VPN_SESSIONS" \
+        "$NODE_BIN" "$COOKIE_HELPER" --json "$@" > "$helper_output"
+  ) &
+  helper_pid=$!
+  helper_started="$(date +%s)"
+  while kill -0 "$helper_pid" >/dev/null 2>&1; do
+    if process_control_interrupt_requests; then
+      log "Control command '$CONTROL_INTERRUPT_COMMAND' interrupted cookie helper."
+      kill_process_tree TERM "$helper_pid"
+      sleep 2
+      kill_process_tree KILL "$helper_pid"
+      wait "$helper_pid" >/dev/null 2>&1 || true
+      rm -f "$helper_output"
+      return 130
+    fi
+    helper_elapsed=$(( $(date +%s) - helper_started ))
+    if (( COOKIE_HELPER_TIMEOUT_SECONDS > 0 && helper_elapsed >= COOKIE_HELPER_TIMEOUT_SECONDS )); then
+      log "Cookie helper timed out after ${COOKIE_HELPER_TIMEOUT_SECONDS}s."
+      kill_process_tree TERM "$helper_pid"
+      sleep 2
+      kill_process_tree KILL "$helper_pid"
+      wait "$helper_pid" >/dev/null 2>&1 || true
+      rm -f "$helper_output"
+      return 124
+    fi
+    sleep "$CONTROL_POLL_SECONDS"
+  done
+  helper_rc=0
+  wait "$helper_pid" || helper_rc=$?
   if (( helper_rc != 0 )); then
     rm -f "$helper_output"
     return "$helper_rc"
@@ -1274,6 +1389,17 @@ signal_tracked_openconnect() {
   kill "-$signal" "$pid" >/dev/null 2>&1 || true
   sleep 1
   [[ "$signal" == "HUP" || "$signal" == "TERM" ]] && rm -f "$PID_FILE"
+}
+
+kill_process_tree() {
+  local signal="$1"
+  local pid="$2"
+  local child
+  [[ "$pid" == <-> ]] || return 0
+  for child in $(/bin/ps -ax -o pid= -o ppid= 2>/dev/null | /usr/bin/awk -v ppid="$pid" '$2 == ppid { print $1 }'); do
+    kill_process_tree "$signal" "$child"
+  done
+  kill "-$signal" "$pid" >/dev/null 2>&1 || true
 }
 
 start_openconnect_with_cookie() {
@@ -1561,8 +1687,8 @@ command_once() {
 
 command_run() {
   require_root
-  acquire_run_lock
   setup_control_dir
+  acquire_run_lock
   initialize_network_signature
   log "Starting daemon loop. interval=${CHECK_INTERVAL_SECONDS}s threshold=$FAILURE_THRESHOLD auto=$AUTO_RECONNECT connect_on_start=$CONNECT_ON_START"
   local failures=0
