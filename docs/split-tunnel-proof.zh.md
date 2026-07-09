@@ -13,6 +13,12 @@
 
 因此，本工具可以和系统代理类工具同时使用，例如 Clash、Shadowrocket：UC Davis 内网流量由本工具走 VPN；YouTube 等流量可由 Clash 代理；Bilibili 等未被 Clash 规则代理的流量则按默认路由直接从 `en0` 出口访问。
 
+实际使用时建议保持职责边界清晰：本工具只负责 UC Davis VPN tunnel 和 UC Davis split routes；Clash、Surge、Shadowrocket 等代理工具负责 system proxy、TUN mode 和普通公网代理规则。本工具也可以和本地 SOCKS 工具一起使用，例如 [proxyctl](https://github.com/LYK-love/proxyctl)。`proxyctl` 可以作为 Clash 的一个本地 SOCKS 节点，但 Clash 不限于这个节点；任何健康的公网订阅节点也应继续走物理默认路由，不受 UC Davis VPN 影响。
+
+当 Clash 开启 system proxy 或 TUN mode 时，应用流量先进入 Clash；随后 Clash 再向当前选中的上游节点发起连接。在本工具默认 split-tunnel 配置下，只要该上游节点的 IP 不属于 UC Davis split routes，Clash 到节点的连接就会走系统默认路由 `en0`，而不是 VPN 接口。因此，上游节点可以是本地 SOCKS、Trojan、Vmess、Vless 或其他健康的公网代理节点。如果只有本地 SOCKS 节点可用、订阅节点不可用，应先更新订阅并检查节点健康；过期域名、失效端口和服务商侧故障不属于 VPN 路由问题。
+
+开启 Clash/Mihomo fake-ip DNS 时，`198.18.x.x` 或 `198.19.x.x` 是代理 fake IP，不是真实 UC Davis VPN gateway。VPN 关闭且 Clash fake-ip 开启时，`ucdavis-vpnctl status` 不显示 `VPN gateway:` 行是正常现象；如果它显示 `VPN gateway: 198.18.x.x via 198.18.0.1 on utunX`，通常说明安装的 daemon 太旧或 fake-ip 过滤没有生效。
+
 ## 配置
 
 ```zsh

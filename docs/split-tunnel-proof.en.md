@@ -13,6 +13,12 @@ When a destination IP falls inside either network, the kernel selects the matchi
 
 Therefore, this tool can run together with system proxy tools such as Clash or Shadowrocket: UC Davis internal traffic is handled by this VPN tool; YouTube traffic can be handled by Clash; Bilibili traffic that is not proxied by Clash follows the default route and leaves directly through `en0`.
 
+In day-to-day use, keep the ownership boundary clear: this tool owns only the UC Davis VPN tunnel and UC Davis split routes; Clash, Surge, Shadowrocket, or another proxy tool owns system proxy, TUN mode, and ordinary public-internet proxy rules. This tool can also run alongside local SOCKS helpers such as [proxyctl](https://github.com/LYK-love/proxyctl). `proxyctl` can be one local SOCKS node in Clash, but Clash is not limited to that node; any healthy public subscription node should also keep using the physical default route and should not be affected by the UC Davis VPN.
+
+When Clash system proxy or TUN mode is enabled, application traffic first enters Clash. Clash then opens its own outbound connection to the currently selected upstream node. With this tool's default split-tunnel configuration, that outbound connection uses the system default route on `en0` unless the selected node's IP is inside a UC Davis split route. The upstream node can therefore be a local SOCKS node, Trojan, Vmess, Vless, or another healthy public proxy node. If only the local SOCKS node works and subscription nodes fail, update the subscription and check node health first; expired domains, dead ports, and provider-side failures are not VPN route failures.
+
+When Clash/Mihomo fake-ip DNS is enabled, `198.18.x.x` or `198.19.x.x` is a proxy fake IP, not a real UC Davis VPN gateway. If the VPN is off and Clash fake-ip is on, it is normal for `ucdavis-vpnctl status` to omit the `VPN gateway:` line. If it shows `VPN gateway: 198.18.x.x via 198.18.0.1 on utunX`, the installed daemon is likely too old or fake-ip filtering is not active.
+
 ## Configuration
 
 ```zsh

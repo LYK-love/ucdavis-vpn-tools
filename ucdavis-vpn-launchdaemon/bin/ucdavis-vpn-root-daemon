@@ -71,6 +71,10 @@ MAX_BROWSER_SESSION_ATTEMPTS="${MAX_BROWSER_SESSION_ATTEMPTS:-2}"
 PRESERVE_DEFAULT_ROUTE="${PRESERVE_DEFAULT_ROUTE:-1}"
 DEFAULT_ROUTE_RESTORE_DELAY_SECONDS="${DEFAULT_ROUTE_RESTORE_DELAY_SECONDS:-2}"
 [[ "$DEFAULT_ROUTE_RESTORE_DELAY_SECONDS" == <-> ]] || DEFAULT_ROUTE_RESTORE_DELAY_SECONDS=2
+DEFAULT_ROUTE_RESTORE_ATTEMPTS="${DEFAULT_ROUTE_RESTORE_ATTEMPTS:-6}"
+DEFAULT_ROUTE_RESTORE_POLL_SECONDS="${DEFAULT_ROUTE_RESTORE_POLL_SECONDS:-2}"
+[[ "$DEFAULT_ROUTE_RESTORE_ATTEMPTS" == <-> ]] || DEFAULT_ROUTE_RESTORE_ATTEMPTS=6
+[[ "$DEFAULT_ROUTE_RESTORE_POLL_SECONDS" == <-> ]] || DEFAULT_ROUTE_RESTORE_POLL_SECONDS=2
 VPN_SPLIT_ROUTES="${VPN_SPLIT_ROUTES:-169.237.0.0/16 128.120.0.0/16}"
 VPN_ROUTE_PING_TARGET="${VPN_ROUTE_PING_TARGET:-1}"
 NETWORK_CHANGE_DETECT="${NETWORK_CHANGE_DETECT:-1}"
@@ -368,6 +372,17 @@ default_route_info() {
     return 0
   fi
 
+  route_info="$(/usr/sbin/netstat -rn -f inet 2>/dev/null | /usr/bin/awk '
+    $1 == "default" && $2 != "" && $NF != "" {
+      print $2 "|" $NF
+      exit
+    }
+  ' || true)"
+  if [[ -n "$route_info" ]]; then
+    print -r -- "$route_info"
+    return 0
+  fi
+
   local iface="$fallback_iface"
   if [[ -z "$iface" ]]; then
     iface="$(/usr/sbin/scutil --nwi 2>/dev/null | /usr/bin/awk '
@@ -391,6 +406,11 @@ default_route_info() {
 is_tunnel_iface() {
   local iface="$1"
   [[ "$iface" == utun* || "$iface" == tun* || "$iface" == ppp* ]]
+}
+
+is_proxy_fake_ip() {
+  local ip="$1"
+  [[ "$ip" == 198.18.* || "$ip" == 198.19.* ]]
 }
 
 physical_route_from_interface() {
@@ -568,6 +588,43 @@ restore_default_route() {
   fi
 }
 
+restore_default_route_until_stable() {
+  [[ "$PRESERVE_DEFAULT_ROUTE" == "1" ]] || return 0
+  local info="${1:-}"
+  local reason="${2:-route guard}"
+  local attempts="${3:-$DEFAULT_ROUTE_RESTORE_ATTEMPTS}"
+  local poll_seconds="${4:-$DEFAULT_ROUTE_RESTORE_POLL_SECONDS}"
+  [[ "$attempts" == <-> ]] || attempts=1
+  [[ "$poll_seconds" == <-> ]] || poll_seconds=1
+  (( attempts > 0 )) || attempts=1
+
+  [[ -n "$info" ]] || info="$(saved_physical_default_route_info || true)"
+  [[ -n "$info" ]] || return 1
+
+  local -a parts current_parts
+  parts=("${(@ps:|:)info}")
+  local gateway="${parts[1]:-}"
+  local iface="${parts[2]:-}"
+  [[ -n "$gateway" && -n "$iface" ]] || return 1
+  is_tunnel_iface "$iface" && return 1
+
+  local i current current_gateway current_iface
+  for (( i = 1; i <= attempts; i++ )); do
+    restore_default_route "$info" "$reason attempt $i/$attempts" >/dev/null 2>&1 || true
+    current="$(default_route_info || true)"
+    current_parts=("${(@ps:|:)current}")
+    current_gateway="${current_parts[1]:-}"
+    current_iface="${current_parts[2]:-}"
+    if [[ "$current_gateway" == "$gateway" && "$current_iface" == "$iface" ]]; then
+      return 0
+    fi
+    (( i < attempts )) && sleep "$poll_seconds"
+  done
+
+  log "Default route did not stabilize via $gateway on $iface after $attempts restore attempts ($reason)."
+  return 1
+}
+
 route_guard_tick() {
   [[ "$PRESERVE_DEFAULT_ROUTE" == "1" ]] || return 0
 
@@ -691,12 +748,22 @@ ensure_vpn_split_routes() {
 }
 
 vpn_server_route_info() {
-  route_get "$SERVER" | /usr/bin/awk '
+  local info
+  info="$(route_get "$SERVER" | /usr/bin/awk '
     /route to:/ { route=$3 }
     /gateway:/ { gateway=$2 }
     /interface:/ { iface=$2 }
     END { if (route || gateway || iface) print route "|" gateway "|" iface }
-  '
+  ' || true)"
+  [[ -n "$info" ]] || return 1
+
+  local -a parts
+  parts=("${(@ps:|:)info}")
+  if is_proxy_fake_ip "${parts[1]:-}" || is_proxy_fake_ip "${parts[2]:-}"; then
+    return 1
+  fi
+
+  print -r -- "$info"
 }
 
 repair_stale_vpn_server_route() {
@@ -1442,6 +1509,9 @@ start_openconnect_with_cookie() {
     restore_default_route "$physical_default" "after OpenConnect route script" >/dev/null 2>&1 || true
   fi
   ensure_vpn_split_routes "after OpenConnect route script"
+  if [[ "$PRESERVE_DEFAULT_ROUTE" == "1" ]]; then
+    restore_default_route_until_stable "$physical_default" "after VPN split routes" >/dev/null 2>&1 || true
+  fi
   return 0
 }
 

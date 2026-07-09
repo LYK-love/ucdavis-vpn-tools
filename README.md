@@ -20,18 +20,33 @@ openconnect --protocol=nc
 Your school or department may use a different realm, URL, or policy. Treat the
 defaults as examples and review the generated config before enabling any daemon.
 
-## Split Tunnel and System Proxies
+## Clash / Proxy Tool Compatibility
 
 This tool is designed as a split-tunnel VPN: only UC Davis internal routes are
 sent through the VPN, while ordinary internet traffic stays on the physical
-network route. It can be used together with system proxy tools such as Clash or
-Shadowrocket.
+network route.
+
+This means it is intended to run alongside Clash, Mihomo, Surge, Shadowrocket,
+and local SOCKS helpers such as
+[proxyctl](https://github.com/LYK-love/proxyctl). Proxy tools can continue to
+own system proxy, TUN mode, DNS fake-ip behavior, and ordinary public-internet
+proxy rules; this VPN tool should own only UC Davis split routes.
+
+In the normal setup, Clash can use any healthy upstream node, including a
+`proxyctl` local SOCKS node or ordinary subscription nodes. Those node
+connections stay on the physical default route and should not be captured by the
+UC Davis VPN.
 
 See the technical verification:
 
 - [Split tunnel verification](docs/split-tunnel-proof.md)
 - [中文版本](docs/split-tunnel-proof.zh.md)
 - [English version](docs/split-tunnel-proof.en.md)
+
+Related notes:
+
+- [Clash Proxy Tools](https://lyk-love.cn/2026/05/06/clash-proxy-tools/)
+- [如何使用远程服务器作为本机的代理](https://lyk-love.cn/2026/07/08/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E8%BF%9C%E7%A8%8B%E6%9C%8D%E5%8A%A1%E5%99%A8%E4%BD%9C%E4%B8%BA%E6%9C%AC%E6%9C%BA%E7%9A%84%E4%BB%A3%E7%90%86/)
 
 ## What Is Not Committed
 

@@ -33,6 +33,8 @@ done
 STATE_DIR="${STATE_DIR:-/var/run/ucdavis-openconnect-daemon}"
 CONTROL_DIR="${CONTROL_DIR:-$STATE_DIR/control}"
 CONTROL_RESPONSE_DIR="${CONTROL_RESPONSE_DIR:-$STATE_DIR/control/responses}"
+LABEL="${LABEL:-local.ucdavis-openconnect-daemon}"
+PLIST_FILE="${PLIST_FILE:-/Library/LaunchDaemons/$LABEL.plist}"
 ROOT_DAEMON_BIN="${ROOT_DAEMON_BIN:-/usr/local/sbin/ucdavis-vpn-root-daemon}"
 if [[ ! -x "$ROOT_DAEMON_BIN" && -x "${0:A:h}/ucdavis-vpn-root-daemon" ]]; then
   ROOT_DAEMON_BIN="${0:A:h}/ucdavis-vpn-root-daemon"
@@ -57,7 +59,48 @@ No-sudo commands:
 
 Config:
   $CONFIG_FILE
+
+Troubleshooting:
+  $PROGRAM_NAME status
+  $PROGRAM_NAME doctor
+  tail -n 80 /var/log/ucdavis-openconnect-daemon/daemon.log
 EOF
+}
+
+print_launchdaemon_help() {
+  cat >&2 <<EOF
+
+LaunchDaemon checks:
+  launchctl print system/$LABEL
+
+If launchctl says the service is already loaded, do not bootstrap it again.
+Restart it with:
+  sudo launchctl bootout system "$PLIST_FILE"
+  sudo launchctl bootstrap system "$PLIST_FILE"
+
+If it is not loaded yet:
+  sudo launchctl bootstrap system "$PLIST_FILE"
+
+Recent logs:
+  tail -n 80 /var/log/ucdavis-openconnect-daemon/daemon.log
+  tail -n 80 /var/log/ucdavis-openconnect-daemon/launchd.err.log
+EOF
+}
+
+require_root_daemon_bin() {
+  if [[ -x "$ROOT_DAEMON_BIN" ]]; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+Root daemon binary is missing or not executable:
+  $ROOT_DAEMON_BIN
+
+Install or repair the LaunchDaemon:
+  cd ucdavis-vpn-launchdaemon
+  sudo ./install.sh
+EOF
+  return 1
 }
 
 command_set_password() {
@@ -133,8 +176,12 @@ send_control_request() {
   local id request tmp response waited timeout code output
   [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]] || {
     print -u2 "Control channel is not writable: $CONTROL_DIR"
-    print -u2 "Install/reload the LaunchDaemon first:"
-    print -u2 "  cd ucdavis-vpn-launchdaemon && sudo ./install.sh"
+    print -u2 ""
+    print -u2 "This usually means the root LaunchDaemon is not loaded, is still starting, or the control directory has the wrong owner."
+    print -u2 "First check:"
+    print -u2 "  $PROGRAM_NAME status"
+    print -u2 "  $PROGRAM_NAME doctor"
+    print_launchdaemon_help
     return 1
   }
 
@@ -169,6 +216,13 @@ send_control_request() {
   done
 
   print -u2 "Timed out waiting for daemon response to: $command"
+  print -u2 ""
+  print -u2 "The request was submitted, but the root daemon did not answer within ${timeout}s."
+  print -u2 "Common causes: Chrome login is waiting for Duo/MFA, OpenConnect is hanging, or the daemon is stuck in a network route/DNS operation."
+  print -u2 "Check state and logs:"
+  print -u2 "  $PROGRAM_NAME status"
+  print -u2 "  tail -n 120 /var/log/ucdavis-openconnect-daemon/daemon.log"
+  print -u2 "  tail -n 120 /var/log/ucdavis-openconnect-daemon/openconnect.log"
   return 124
 }
 
@@ -177,6 +231,7 @@ case "$COMMAND" in
     usage
     ;;
   status|doctor)
+    require_root_daemon_bin || exit 1
     "$ROOT_DAEMON_BIN" --config "$CONFIG_FILE" "$COMMAND"
     ;;
   set-password|password|store-password)
@@ -193,6 +248,7 @@ case "$COMMAND" in
     ;;
   *)
     print -u2 "Unknown command: $COMMAND"
+    print -u2 "Run '$PROGRAM_NAME help' to see valid commands."
     usage >&2
     exit 2
     ;;

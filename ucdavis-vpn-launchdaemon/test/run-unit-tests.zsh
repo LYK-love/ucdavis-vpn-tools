@@ -57,6 +57,8 @@ MAX_BROWSER_SESSION_ATTEMPTS=2
 CONTROL_POLL_SECONDS=1
 PRESERVE_DEFAULT_ROUTE=1
 DEFAULT_ROUTE_RESTORE_DELAY_SECONDS=0
+DEFAULT_ROUTE_RESTORE_ATTEMPTS=2
+DEFAULT_ROUTE_RESTORE_POLL_SECONDS=0
 NETWORK_CHANGE_DETECT=1
 NETWORK_CHANGE_SETTLE_SECONDS=0
 NETWORK_CHANGE_BYPASS_COOLDOWN=1
@@ -102,6 +104,65 @@ if remember_physical_default_route "172.25.228.1|utun6" >/dev/null 2>&1; then
   fail "tunnel default route should not be saved as physical"
 fi
 assert_eq "192.0.2.1|en0" "$(saved_physical_default_route_info)" "tunnel route should not replace saved physical route"
+is_proxy_fake_ip 198.18.0.60 || fail "198.18/15 should be treated as proxy fake-ip"
+is_proxy_fake_ip 198.19.255.1 || fail "198.19/15 should be treated as proxy fake-ip"
+is_proxy_fake_ip 198.20.0.1 && fail "non-198.18/15 should not be treated as proxy fake-ip"
+
+route_get() {
+  case "$1" in
+    "$SERVER")
+      cat <<'EOF'
+   route to: 198.18.0.60
+destination: 128.0.0.0
+       mask: 128.0.0.0
+    gateway: 198.18.0.1
+  interface: utun6
+EOF
+      ;;
+    default)
+      cat <<'EOF'
+   route to: default
+destination: default
+    gateway: 192.0.2.1
+  interface: en0
+EOF
+      ;;
+  esac
+}
+assert_eq "" "$(vpn_server_route_info || true)" "fake-ip VPN server route should be ignored"
+unset -f route_get
+
+RESTORE_PROBE_COUNT_FILE="$TMP_DIR/restore-probe-count"
+print 0 > "$RESTORE_PROBE_COUNT_FILE"
+route_get() {
+  case "$1" in
+    default)
+      local restore_probe_count
+      restore_probe_count="$(<"$RESTORE_PROBE_COUNT_FILE")"
+      restore_probe_count=$((restore_probe_count + 1))
+      print "$restore_probe_count" > "$RESTORE_PROBE_COUNT_FILE"
+      if (( restore_probe_count < 2 )); then
+        cat <<'EOF'
+   route to: default
+destination: default
+    gateway: 172.25.228.36
+  interface: utun6
+EOF
+      else
+        cat <<'EOF'
+   route to: default
+destination: default
+    gateway: 192.0.2.1
+  interface: en0
+EOF
+      fi
+      ;;
+  esac
+}
+restore_default_route_until_stable "192.0.2.1|en0" "unit stable restore" 2 0 ||
+  fail "default route should stabilize after retry"
+(( $(<"$RESTORE_PROBE_COUNT_FILE") >= 2 )) || fail "stable restore should re-check the default route"
+unset -f route_get
 
 PING_TARGET=
 PING_TARGETS="203.0.113.254 127.0.0.1"

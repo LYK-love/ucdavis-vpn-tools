@@ -123,6 +123,25 @@ Start immediately during install instead of running `launchctl` later:
 sudo START_AFTER_INSTALL=1 ./install.sh
 ```
 
+Put `START_AFTER_INSTALL=1` after `sudo`. This form preserves the variable for
+the root install script. `START_AFTER_INSTALL=1 sudo ./install.sh` may be
+discarded by sudo's environment policy and leave the service installed but not
+restarted.
+
+If `launchctl bootstrap` fails with `Bootstrap failed: 5: Input/output error`,
+first check whether the service is already loaded:
+
+```zsh
+launchctl print system/local.ucdavis-openconnect-daemon
+```
+
+If it is already loaded, restart it instead of bootstrapping a second copy:
+
+```zsh
+sudo launchctl bootout system /Library/LaunchDaemons/local.ucdavis-openconnect-daemon.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/local.ucdavis-openconnect-daemon.plist
+```
+
 ## Advanced Configure
 
 Installed config:
@@ -155,6 +174,8 @@ MAX_BROWSER_SESSION_ATTEMPTS=2
 CONTROL_POLL_SECONDS=1
 PRESERVE_DEFAULT_ROUTE=1
 DEFAULT_ROUTE_RESTORE_DELAY_SECONDS=2
+DEFAULT_ROUTE_RESTORE_ATTEMPTS=6
+DEFAULT_ROUTE_RESTORE_POLL_SECONDS=2
 VPN_SPLIT_ROUTES="169.237.0.0/16 128.120.0.0/16"
 VPN_ROUTE_PING_TARGET=1
 NETWORK_CHANGE_DETECT=1
@@ -192,6 +213,12 @@ block and starts a fresh attempt:
 `PRESERVE_DEFAULT_ROUTE=1` keeps the macOS default route on the physical network
 after OpenConnect starts. This prevents the VPN route script from temporarily
 turning the tunnel into the machine-wide default internet path.
+`DEFAULT_ROUTE_RESTORE_DELAY_SECONDS` is the first short delay after starting
+OpenConnect, before restoring the physical default route again. Because some VPN
+route scripts can still rewrite the default route after that point,
+`DEFAULT_ROUTE_RESTORE_ATTEMPTS` and `DEFAULT_ROUTE_RESTORE_POLL_SECONDS` make
+the daemon keep checking briefly and restore the physical default route until it
+stays on the physical gateway.
 `VPN_SPLIT_ROUTES` lists campus routes that should still go through the VPN
 tunnel while the default route stays on the physical network. `VPN_ROUTE_PING_TARGET=1`
 also pins the resolved health-check target, such as an SSH alias host or
@@ -206,6 +233,83 @@ web sessions for closure on the Ivanti open-sessions page before continuing.
 ```zsh
 sudo /usr/local/sbin/ucdavis-vpn-root-daemon connect
 ```
+
+## Using With Clash Or Other Proxy Tools
+
+The LaunchDaemon is designed to coexist with system proxy and TUN tools, but
+the ownership boundary matters:
+
+- This tool owns only the UC Davis VPN tunnel and campus split routes.
+- Clash, Surge, Shadowrocket, or another proxy app should own system proxy, TUN
+  mode, and ordinary internet proxy rules.
+- Keep `PRESERVE_DEFAULT_ROUTE=1` so OpenConnect does not become the machine-wide
+  default internet route.
+- Keep `VPN_SPLIT_ROUTES` limited to UC Davis networks unless you explicitly want
+  more traffic inside the VPN.
+
+When Clash or Mihomo uses fake-ip DNS, domains may resolve to `198.18.x.x` or
+`198.19.x.x`. Those are proxy fake IPs, not real UC Davis VPN gateways. The
+daemon intentionally ignores them when reporting `VPN gateway` and when repairing
+routes. Therefore this status while the VPN is off is normal:
+
+```text
+Tracked:      stopped
+VPN IP:       not found
+Default route: 192.168.2.1 on en0 (guard active)
+OpenConnect processes:
+  none
+```
+
+It is also normal for there to be no `VPN gateway:` line in that state. If the
+status shows `VPN gateway: 198.18.x.x via 198.18.0.1 on utunX`, the installed
+daemon is too old or fake-ip filtering is not active.
+
+Useful checks when combining this tool with a proxy app:
+
+```zsh
+ucdavis-vpnctl status
+dig +short vpn.engineering.ucdavis.edu
+route -n get vpn.engineering.ucdavis.edu
+route -n get default
+```
+
+With Clash fake-ip enabled, `dig` may return `198.18.x.x`; that alone is not an
+error. A real UC Davis VPN connection is indicated by `Tracked: running`, a
+`VPN IP` like `172.25.x.x`, and campus routes such as `169.237.0.0/16` and
+`128.120.0.0/16` going through the VPN `utun` interface.
+
+Avoid using a Clash proxy node that itself depends on the UC Davis VPN unless
+you have a deliberate bootstrap plan. The VPN login must be able to reach
+`vpn.engineering.ucdavis.edu`; the proxy app must be able to reach its own
+upstream nodes. If either side depends on the other during startup, turn one off
+temporarily, connect, then turn the other back on.
+
+## Troubleshooting
+
+Start with:
+
+```zsh
+ucdavis-vpnctl status
+ucdavis-vpnctl doctor
+tail -n 120 /var/log/ucdavis-openconnect-daemon/daemon.log
+tail -n 120 /var/log/ucdavis-openconnect-daemon/openconnect.log
+```
+
+Common cases:
+
+- `Auto: paused (manual disable)`: you intentionally turned the VPN off with
+  `ucdavis-vpnctl off`. Run `ucdavis-vpnctl on` to resume.
+- `Tracked: stopped` with `Auto: paused`: the daemon is running, but no VPN
+  tunnel should be active.
+- `Control channel is not writable`: the LaunchDaemon is not loaded, is still
+  starting, or `/var/run/ucdavis-openconnect-daemon/control` has the wrong owner.
+  Check `launchctl print system/local.ucdavis-openconnect-daemon`.
+- `Timed out waiting for daemon response`: Chrome login may be waiting for
+  Duo/MFA, OpenConnect may be hanging, or a route/DNS lookup may be stuck during
+  a network transition. Check the daemon and OpenConnect logs above.
+- `Bootstrap failed: 5: Input/output error`: the service is often already loaded.
+  Use `launchctl print` to confirm, then `bootout` followed by `bootstrap` to
+  restart.
 
 After editing config:
 

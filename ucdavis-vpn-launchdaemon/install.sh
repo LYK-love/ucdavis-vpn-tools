@@ -20,6 +20,10 @@ START_AFTER_INSTALL="${START_AFTER_INSTALL:-0}"
 if [[ "$(id -u)" != "0" ]]; then
   print -u2 "Run with sudo:"
   print -u2 "  sudo \"$ROOT_DIR/install.sh\""
+  print -u2 ""
+  print -u2 "To install and restart the LaunchDaemon in one step, put the environment"
+  print -u2 "assignment after sudo so sudo does not discard it:"
+  print -u2 "  sudo START_AFTER_INSTALL=1 \"$ROOT_DIR/install.sh\""
   exit 1
 fi
 
@@ -156,6 +160,8 @@ ensure_config_default CONTROL_POLL_SECONDS 1
 ensure_config_default COOKIE_HELPER_TIMEOUT_SECONDS 300
 ensure_config_default PRESERVE_DEFAULT_ROUTE 1
 ensure_config_default DEFAULT_ROUTE_RESTORE_DELAY_SECONDS 2
+ensure_config_default DEFAULT_ROUTE_RESTORE_ATTEMPTS 6
+ensure_config_default DEFAULT_ROUTE_RESTORE_POLL_SECONDS 2
 ensure_config_default VPN_SPLIT_ROUTES '"169.237.0.0/16 128.120.0.0/16"'
 ensure_config_default VPN_ROUTE_PING_TARGET 1
 ensure_config_default NETWORK_CHANGE_DETECT 1
@@ -204,9 +210,29 @@ print "  $PLIST_FILE"
 
 if [[ "$START_AFTER_INSTALL" == "1" ]]; then
   /bin/launchctl bootout system "$PLIST_FILE" >/dev/null 2>&1 || true
-  /bin/launchctl bootstrap system "$PLIST_FILE"
+  if ! /bin/launchctl bootstrap system "$PLIST_FILE"; then
+    cat >&2 <<EOF
+Could not start $LABEL with launchctl.
+
+Useful checks:
+  /bin/launchctl print system/$LABEL
+  /usr/bin/plutil -lint "$PLIST_FILE"
+  /usr/bin/tail -n 80 "$LOG_DIR/launchd.err.log"
+
+If launchctl reports "Bootstrap failed: 5: Input/output error", the service
+may already be loaded or launchd may still be holding the old job. Try:
+  sudo /bin/launchctl bootout system "$PLIST_FILE"
+  sudo /bin/launchctl bootstrap system "$PLIST_FILE"
+EOF
+    exit 1
+  fi
   print "Started $LABEL"
 else
   print "Not started. To enable now:"
+  print "  sudo launchctl bootstrap system \"$PLIST_FILE\""
+  print ""
+  print "If the service is already loaded, bootstrap can fail with code 5."
+  print "Restart it instead:"
+  print "  sudo launchctl bootout system \"$PLIST_FILE\""
   print "  sudo launchctl bootstrap system \"$PLIST_FILE\""
 fi
