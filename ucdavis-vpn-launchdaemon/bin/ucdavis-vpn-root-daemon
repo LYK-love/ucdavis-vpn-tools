@@ -50,6 +50,7 @@ PING_TARGETS="${PING_TARGETS:-}"
 PING_COUNT="${PING_COUNT:-2}"
 PING_TIMEOUT_MS="${PING_TIMEOUT_MS:-1500}"
 PING_BIN="${PING_BIN:-/sbin/ping}"
+IFCONFIG_BIN="${IFCONFIG_BIN:-/sbin/ifconfig}"
 HEALTH_CHECK_MODE="${HEALTH_CHECK_MODE:-auto}"
 HEALTH_MIN_SUCCESS="${HEALTH_MIN_SUCCESS:-1}"
 TCP_TARGET="${TCP_TARGET:-}"
@@ -747,6 +748,52 @@ ensure_vpn_split_routes() {
   fi
 }
 
+vpn_split_route_status() {
+  local vpn_info
+  vpn_info="$(vpn_internal_ip || true)"
+  if [[ -z "$vpn_info" ]]; then
+    print "not checked (VPN interface not found)"
+    return 0
+  fi
+
+  local -a vpn_parts
+  vpn_parts=("${(@s: :)vpn_info}")
+  local vpn_iface="${vpn_parts[1]:-}"
+  if [[ -z "$vpn_iface" ]]; then
+    print "not checked (VPN interface not found)"
+    return 0
+  fi
+
+  local route probe route_info gateway iface bad=0
+  local -a summaries
+  for route in ${=VPN_SPLIT_ROUTES}; do
+    probe="${route%%/*}"
+    route_info="$(route_get "$probe" | /usr/bin/awk '
+      /gateway:/ { gateway=$2 }
+      /interface:/ { iface=$2 }
+      END { if (gateway || iface) print (gateway ? gateway : "direct") "|" (iface ? iface : "unknown") }
+    ' || true)"
+
+    local -a route_parts
+    route_parts=("${(@ps:|:)route_info}")
+    gateway="${route_parts[1]:-not found}"
+    iface="${route_parts[2]:-not found}"
+
+    if [[ "$iface" == "$vpn_iface" ]]; then
+      summaries+=("$route on $iface")
+    else
+      bad=1
+      summaries+=("$route via $gateway on $iface")
+    fi
+  done
+
+  if (( bad )); then
+    print "WARNING ${summaries[*]}; expected $vpn_iface"
+  else
+    print "OK ${summaries[*]}"
+  fi
+}
+
 vpn_server_route_info() {
   local info
   info="$(route_get "$SERVER" | /usr/bin/awk '
@@ -960,9 +1007,19 @@ vpn_session_ok() {
 }
 
 vpn_internal_ip() {
-  /sbin/ifconfig | /usr/bin/awk '
-    /^utun[0-9]+:/ { iface=$1; sub(":", "", iface) }
-    $1 == "inet" && $2 ~ /^172\.2[0-9]\./ { print iface " " $2; exit }
+  "$IFCONFIG_BIN" | /usr/bin/awk '
+    /^[[:alnum:]][^:]*:/ {
+      iface=$1
+      sub(":", "", iface)
+      if (iface !~ /^(utun|tun|ppp)[0-9]*$/) {
+        iface=""
+      }
+      next
+    }
+    iface != "" && $1 == "inet" && $2 ~ /^172\.2[0-9]\./ {
+      print iface " " $2
+      exit
+    }
   '
 }
 
@@ -1615,6 +1672,8 @@ command_enable() {
 }
 
 command_status() {
+  route_guard_tick >/dev/null 2>&1 || true
+
   local target health_status target_route_status ip any cookie_summary
   local health_detail
   health_detail="$(health_check_description)"
@@ -1670,6 +1729,7 @@ command_status() {
   print "VPN IP:       $ip"
   print "Health:      $health_status"
   print "Health route: $target_route_status"
+  print "Split routes: $(vpn_split_route_status)"
   print "Default route: $current_default_status"
   print "Auto:         $(auto_reconnect_status)"
   print "Browser tries: $(browser_session_budget_status)"

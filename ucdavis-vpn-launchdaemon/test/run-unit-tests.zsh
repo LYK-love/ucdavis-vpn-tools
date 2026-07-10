@@ -23,12 +23,25 @@ assert_eq() {
 
 CONFIG_FILE="$TMP_DIR/config.env"
 FAKE_PING="$TMP_DIR/fake-ping"
+FAKE_IFCONFIG="$TMP_DIR/fake-ifconfig"
 cat > "$FAKE_PING" <<'EOF'
 #!/bin/zsh
 target="${@: -1}"
 [[ "$target" == "127.0.0.1" ]]
 EOF
 chmod 0755 "$FAKE_PING"
+cat > "$FAKE_IFCONFIG" <<'EOF'
+#!/bin/zsh
+cat <<'IFCONFIG'
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 172.20.10.4 netmask 0xfffffff0 broadcast 172.20.10.15
+utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1400
+	inet 172.25.228.36 --> 172.25.228.36 netmask 0xffffffff
+utun5: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000
+	inet 198.18.0.1 --> 198.18.0.1 netmask 0xfffffffc
+IFCONFIG
+EOF
+chmod 0755 "$FAKE_IFCONFIG"
 
 cat > "$CONFIG_FILE" <<EOF
 LABEL=local.ucdavis-openconnect-daemon-test
@@ -43,6 +56,7 @@ PING_TARGET=127.0.0.1
 PING_COUNT=1
 PING_TIMEOUT_MS=200
 PING_BIN=$FAKE_PING
+IFCONFIG_BIN=$FAKE_IFCONFIG
 HEALTH_CHECK_MODE=ping
 TCP_TARGET=
 TCP_PORT=22
@@ -107,6 +121,7 @@ assert_eq "192.0.2.1|en0" "$(saved_physical_default_route_info)" "tunnel route s
 is_proxy_fake_ip 198.18.0.60 || fail "198.18/15 should be treated as proxy fake-ip"
 is_proxy_fake_ip 198.19.255.1 || fail "198.19/15 should be treated as proxy fake-ip"
 is_proxy_fake_ip 198.20.0.1 && fail "non-198.18/15 should not be treated as proxy fake-ip"
+assert_eq "utun4 172.25.228.36" "$(vpn_internal_ip)" "VPN IP should come from OpenConnect utun, not hotspot en0 or Clash fake-ip"
 
 route_get() {
   case "$1" in
