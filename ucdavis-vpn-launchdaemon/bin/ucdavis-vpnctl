@@ -151,8 +151,10 @@ request_waits_for_response() {
 request_submitted_message() {
   case "$1" in
     connect|enable|on)
-      print "Connection requested. Chrome may open for UC Davis authentication."
-      print "Use '$PROGRAM_NAME status' to watch progress, or '$PROGRAM_NAME off' from another terminal to stop it."
+      print "VPN: connecting"
+      print "Finish Chrome/Duo if prompted."
+      print "Check: $PROGRAM_NAME status"
+      print "Stop:  $PROGRAM_NAME off"
       ;;
     *)
       ;;
@@ -175,12 +177,10 @@ send_control_request() {
   local command="$1"
   local id request tmp response waited timeout code output
   [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]] || {
-    print -u2 "Control channel is not writable: $CONTROL_DIR"
-    print -u2 ""
-    print -u2 "This usually means the root LaunchDaemon is not loaded, is still starting, or the control directory has the wrong owner."
-    print -u2 "First check:"
-    print -u2 "  $PROGRAM_NAME status"
+    print -u2 "VPN daemon is not accepting commands."
+    print -u2 "Check:"
     print -u2 "  $PROGRAM_NAME doctor"
+    print -u2 "  launchctl print system/$LABEL"
     print_launchdaemon_help
     return 1
   }
@@ -215,11 +215,9 @@ send_control_request() {
     waited=$(( waited + 1 ))
   done
 
-  print -u2 "Timed out waiting for daemon response to: $command"
-  print -u2 ""
-  print -u2 "The request was submitted, but the root daemon did not answer within ${timeout}s."
-  print -u2 "Common causes: Chrome login is waiting for Duo/MFA, OpenConnect is hanging, or the daemon is stuck in a network route/DNS operation."
-  print -u2 "Check state and logs:"
+  print -u2 "VPN: still working after ${timeout}s"
+  print -u2 "Usually this means Chrome/Duo is waiting or OpenConnect is still starting."
+  print -u2 "Check:"
   print -u2 "  $PROGRAM_NAME status"
   print -u2 "  tail -n 120 /var/log/ucdavis-openconnect-daemon/daemon.log"
   print -u2 "  tail -n 120 /var/log/ucdavis-openconnect-daemon/openconnect.log"
@@ -230,7 +228,15 @@ case "$COMMAND" in
   help)
     usage
     ;;
-  status|doctor)
+  status)
+    require_root_daemon_bin || exit 1
+    if [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]]; then
+      send_control_request status
+    else
+      "$ROOT_DAEMON_BIN" --config "$CONFIG_FILE" status
+    fi
+    ;;
+  doctor)
     require_root_daemon_bin || exit 1
     "$ROOT_DAEMON_BIN" --config "$CONFIG_FILE" "$COMMAND"
     ;;

@@ -780,7 +780,7 @@ vpn_split_route_status() {
     iface="${route_parts[2]:-not found}"
 
     if [[ "$iface" == "$vpn_iface" ]]; then
-      summaries+=("$route on $iface")
+      summaries+=("$route")
     else
       bad=1
       summaries+=("$route via $gateway on $iface")
@@ -788,9 +788,9 @@ vpn_split_route_status() {
   done
 
   if (( bad )); then
-    print "WARNING ${summaries[*]}; expected $vpn_iface"
+    print "WARN (${(j:; :)summaries}; expected $vpn_iface)"
   else
-    print "OK ${summaries[*]}"
+    print "OK (${summaries[*]} -> $vpn_iface)"
   fi
 }
 
@@ -1232,7 +1232,7 @@ process_control_interrupt_requests() {
     fi
     id="${request:t:r}"
     rm -f "$request"
-    if output="$(handle_control_interrupt_command "$command" 2>&1)"; then
+    if output="$(handle_control_interrupt_command "$command")"; then
       rc=0
     else
       rc=$?
@@ -1303,7 +1303,7 @@ process_control_requests() {
     id="${request:t:r}"
     command="$(control_request_field "$request" command)"
     rm -f "$request"
-    if output="$(handle_control_command "$command" 2>&1)"; then
+    if output="$(handle_control_command "$command")"; then
       rc=0
     else
       rc=$?
@@ -1583,6 +1583,7 @@ command_connect() {
       route_guard_tick
       reset_browser_session_attempts "connectivity OK"
       log "OpenConnect already running as pid $pid."
+      print "VPN: connected"
       return 0
     fi
     if browser_session_blocked; then
@@ -1605,6 +1606,7 @@ command_connect() {
   if vpn_session_ok; then
     reset_browser_session_attempts "connectivity OK"
     log "Connectivity is already OK ($(health_check_description)); not starting a duplicate tunnel."
+    print "VPN: connected"
     return 0
   fi
 
@@ -1623,6 +1625,7 @@ command_connect() {
   fi
 
   if start_openconnect_with_cookie "$json" "$physical_default"; then
+    print "VPN: connected"
     return 0
   fi
   block_browser_session_attempts_if_exhausted "OpenConnect failed after browser session attempt" || return "$?"
@@ -1634,22 +1637,28 @@ command_disconnect() {
   require_root
   signal_tracked_openconnect HUP
   log "Disconnected tracked OpenConnect with SIGHUP."
+  print "VPN: disconnected"
+  print "Auto reconnect: on"
 }
 
 command_logout() {
   require_root
   signal_tracked_openconnect TERM
   log "Terminated tracked OpenConnect with SIGTERM."
+  print "VPN: logged out"
+  print "Auto reconnect: on"
 }
 
 command_pause() {
   require_root
   set_auto_reconnect_paused "manual pause"
+  print "Auto reconnect: paused"
 }
 
 command_resume() {
   require_root
   clear_auto_reconnect_paused "manual resume"
+  print "Auto reconnect: on"
 }
 
 command_disable() {
@@ -1657,6 +1666,8 @@ command_disable() {
   set_auto_reconnect_paused "manual disable"
   signal_tracked_openconnect TERM
   log "Disabled automatic reconnect and logged out tracked OpenConnect."
+  print "VPN: off"
+  print "Auto reconnect: paused"
 }
 
 command_enable() {
@@ -1702,11 +1713,12 @@ command_status() {
   if [[ -n "$current_default_info" ]]; then
     local -a current_default_parts
     current_default_parts=("${(@ps:|:)current_default_info}")
-    current_default_status="${current_default_parts[1]:-unknown} on ${current_default_parts[2]:-unknown}"
     if is_tunnel_iface "${current_default_parts[2]:-}"; then
-      current_default_status="$current_default_status (WARNING: VPN owns default route)"
+      current_default_status="WARN ${current_default_parts[1]:-unknown} on ${current_default_parts[2]:-unknown} (VPN owns default route)"
     elif [[ "$PRESERVE_DEFAULT_ROUTE" == "1" ]]; then
-      current_default_status="$current_default_status (guard active)"
+      current_default_status="OK ${current_default_parts[1]:-unknown} on ${current_default_parts[2]:-unknown} (not VPN)"
+    else
+      current_default_status="${current_default_parts[1]:-unknown} on ${current_default_parts[2]:-unknown}"
     fi
   fi
 
@@ -1723,33 +1735,51 @@ command_status() {
     fi
   fi
 
-  print "Label:        $LABEL"
-  print "Config:       $CONFIG_FILE"
-  print "Tracked:      $(tracked_pid_status)"
-  print "VPN IP:       $ip"
-  print "Health:      $health_status"
-  print "Health route: $target_route_status"
-  print "Split routes: $(vpn_split_route_status)"
-  print "Default route: $current_default_status"
-  print "Auto:         $(auto_reconnect_status)"
-  print "Browser tries: $(browser_session_budget_status)"
-  [[ -n "$server_info" ]] && print "VPN gateway:  ${server_parts[1]:-unknown} via ${server_parts[2]:-unknown} on ${server_parts[3]:-unknown}${server_route_status}"
-  print "OpenConnect processes:"
-  if [[ -n "$any" ]]; then
-    print -r -- "$any" | sed 's/^/  /'
+  local split_status auto_status state process_status
+  split_status="$(vpn_split_route_status)"
+  auto_status="$(auto_reconnect_status)"
+  case "$auto_status" in
+    active) auto_status="on" ;;
+    disabled) auto_status="off" ;;
+  esac
+  process_status="$(tracked_pid_status)"
+  if [[ "$process_status" == running* && "$ip" != "not found" ]]; then
+    if [[ "$split_status" == OK* && "$health_status" == OK* ]]; then
+      state="connected"
+    else
+      state="needs attention"
+    fi
+  elif [[ "$process_status" == running* ]]; then
+    state="starting or broken"
   else
-    print "  none"
+    state="disconnected"
   fi
+
+  print "UC Davis VPN: $state"
+  print "Process:      $process_status"
+  print "Tunnel:       $ip"
+  print "Check:        $health_status"
+  print "Campus routes: $split_status"
+  print "Internet route: $current_default_status"
+  print "Auto reconnect: $auto_status"
+  print "Browser login:  $(browser_session_budget_status)"
+  [[ -n "$target" ]] && print "Health route:   $target_route_status"
+  [[ -n "$server_info" ]] && print "VPN server:     ${server_parts[1]:-unknown} via ${server_parts[2]:-unknown} on ${server_parts[3]:-unknown}${server_route_status}"
   if [[ -f "$COOKIE_META_FILE" ]]; then
     cookie_summary="$("$NODE_BIN" -e '
       const fs = require("fs");
       const json = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
       const dsid = (json.cookieExpiries || []).find((cookie) => cookie.name === "DSID");
-      console.log(`${json.ok ? "present" : "missing"}; checked=${json.checkedAt || "unknown"}; DSID expiry ${dsid ? dsid.expiresAt : "unknown"}`);
+      console.log(`${json.ok ? "present" : "missing"}; checked=${json.checkedAt || "unknown"}; DSID=${dsid ? dsid.expiresAt : "unknown"}`);
     ' "$COOKIE_META_FILE" 2>/dev/null || true)"
     print "Cookie:       ${cookie_summary:-metadata unreadable}"
   else
     print "Cookie:       no metadata"
+  fi
+  if [[ "$split_status" == WARN* ]]; then
+    print "Action:       run 'ucdavis-vpnctl on' or wait for the daemon to repair routes"
+  elif [[ "$current_default_status" == WARN* ]]; then
+    print "Action:       run 'ucdavis-vpnctl status' again; route guard will try to repair"
   fi
 }
 
@@ -1786,6 +1816,7 @@ monitor_once() {
   if vpn_session_ok; then
     log "Connectivity OK: $health_detail"
     reset_browser_session_attempts "connectivity OK"
+    print "VPN check: OK"
     return 0
   fi
 
@@ -1793,6 +1824,8 @@ monitor_once() {
   [[ "$AUTO_RECONNECT" == "1" ]] || return 1
   if auto_reconnect_paused; then
     log "Auto reconnect is paused; skipping reconnect."
+    print "VPN check: failed"
+    print "Auto reconnect: paused"
     return 0
   fi
   if browser_session_blocked; then

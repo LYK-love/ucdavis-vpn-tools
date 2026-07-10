@@ -253,11 +253,11 @@ daemon intentionally ignores them when reporting `VPN gateway` and when repairin
 routes. Therefore this status while the VPN is off is normal:
 
 ```text
-Tracked:      stopped
-VPN IP:       not found
-Default route: 192.168.2.1 on en0 (guard active)
-OpenConnect processes:
-  none
+UC Davis VPN: disconnected
+Process:      stopped
+Tunnel:       not found
+Campus routes: not checked (VPN interface not found)
+Internet route: OK 192.168.2.1 on en0 (not VPN)
 ```
 
 It is also normal for there to be no `VPN gateway:` line in that state. If the

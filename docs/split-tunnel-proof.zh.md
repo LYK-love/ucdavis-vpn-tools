@@ -48,10 +48,12 @@ ucdavis-vpnctl status
 关键输出：
 
 ```text
-VPN IP:       utun6 172.25.229.79
-Health:      OK (tunnel)
-Default route: 192.168.2.1 on en0 (guard active)
-VPN gateway:  169.237.216.210 via 192.168.2.1 on en0
+UC Davis VPN: connected
+Tunnel:       utun6 172.25.229.79
+Check:        OK (tunnel)
+Campus routes: OK (169.237.0.0/16 128.120.0.0/16 -> utun6)
+Internet route: OK 192.168.2.1 on en0 (not VPN)
+VPN server:     169.237.216.210 via 192.168.2.1 on en0
 ```
 
 判定：
