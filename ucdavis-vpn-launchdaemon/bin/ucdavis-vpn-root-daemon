@@ -11,7 +11,7 @@ while (( $# > 0 )); do
       CONFIG_FILE="$2"
       shift 2
       ;;
-    run|once|status|connect|disconnect|logout|doctor|pause|resume|disable|enable)
+    run|once|status|connect|disconnect|logout|doctor|pause|resume|disable|enable|reset-login)
       COMMAND="$1"
       shift
       ;;
@@ -179,6 +179,7 @@ Commands:
   resume       Resume automatic reconnect.
   disable      Pause automatic reconnect and disconnect the tunnel.
   enable       Resume automatic reconnect and connect now.
+  reset-login  Reset the dedicated Chrome login profile.
   doctor       Check dependencies and root/user context.
 
 Config:
@@ -1278,6 +1279,9 @@ handle_control_command() {
     enable|on)
       command_enable
       ;;
+    reset-login)
+      command_reset_login
+      ;;
     once)
       monitor_once
       ;;
@@ -1682,6 +1686,45 @@ command_enable() {
   return "$rc"
 }
 
+stop_cookie_chrome() {
+  local pids pid
+  pids="$(/bin/ps -axo pid=,command= | /usr/bin/awk -v port="--remote-debugging-port=$CHROME_CDP_PORT" -v profile="--user-data-dir=$CHROME_PROFILE_DIR" '
+    index($0, port) || index($0, profile) { print $1 }
+  ' || true)"
+  [[ -n "$pids" ]] || return 0
+
+  for pid in ${=pids}; do
+    /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+  done
+  sleep 1
+  for pid in ${=pids}; do
+    if /bin/kill -0 "$pid" >/dev/null 2>&1; then
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+command_reset_login() {
+  require_root
+  stop_cookie_chrome
+  reset_browser_session_attempts "manual login reset" >/dev/null
+  rm -f "$COOKIE_META_FILE"
+
+  local backup=""
+  if [[ -d "$CHROME_PROFILE_DIR" ]]; then
+    backup="${CHROME_PROFILE_DIR}.backup.$(/bin/date +%Y%m%d-%H%M%S)"
+    /bin/mv "$CHROME_PROFILE_DIR" "$backup"
+  fi
+
+  print "Login state: reset"
+  if [[ -n "$backup" ]]; then
+    print "Chrome profile backup: $backup"
+  else
+    print "Chrome profile backup: none"
+  fi
+  print "Next: ucdavis-vpnctl on"
+}
+
 command_status() {
   route_guard_tick >/dev/null 2>&1 || true
 
@@ -1962,6 +2005,7 @@ case "$COMMAND" in
   resume) command_resume ;;
   disable) command_disable ;;
   enable) command_enable ;;
+  reset-login) command_reset_login ;;
   doctor) command_doctor ;;
   help) usage ;;
 esac

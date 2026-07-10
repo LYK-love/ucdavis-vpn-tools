@@ -359,6 +359,13 @@ async function loginForCookie(send) {
 
     lastState = await pageState(send);
     const body = lastState.body || "";
+    if (
+      lastState.host.includes("login.microsoftonline.com") &&
+      (/\/undefined(?:[?#]|$)/.test(lastState.href) || /HTTP ERROR 404|page can.t be found|No webpage was found/i.test(body))
+    ) {
+      throw new Error("Microsoft login state is stale. Run 'ucdavis-vpnctl reset-login', then run 'ucdavis-vpnctl on' again.");
+    }
+
     if (/incorrect user id or password|incorrect|invalid password|type the correct user id or password/i.test(body)) {
       throw new Error(`login page reported an error: ${body.replace(/\s+/g, " ").slice(0, 220)}`);
     }
