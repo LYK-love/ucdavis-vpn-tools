@@ -159,9 +159,14 @@ ensure_config_default MAX_BROWSER_SESSION_ATTEMPTS 2
 ensure_config_default CONTROL_POLL_SECONDS 1
 ensure_config_default COOKIE_HELPER_TIMEOUT_SECONDS 300
 ensure_config_default PRESERVE_DEFAULT_ROUTE 1
+ensure_config_default RESTORE_PHYSICAL_DNS 1
+ensure_config_default DNS_CACHE_FLUSH_ON_RESTORE 1
+ensure_config_default UC_DAVIS_DNS_SERVERS '"169.237.250.250 169.237.1.250"'
 ensure_config_default DEFAULT_ROUTE_RESTORE_DELAY_SECONDS 2
 ensure_config_default DEFAULT_ROUTE_RESTORE_ATTEMPTS 6
 ensure_config_default DEFAULT_ROUTE_RESTORE_POLL_SECONDS 2
+ensure_config_default POST_CONNECT_ROUTE_GUARD_SECONDS 75
+ensure_config_default POST_CONNECT_ROUTE_GUARD_POLL_SECONDS 2
 ensure_config_default VPN_SPLIT_ROUTES '"169.237.0.0/16 128.120.0.0/16"'
 ensure_config_default VPN_ROUTE_PING_TARGET 1
 ensure_config_default NETWORK_CHANGE_DETECT 1
@@ -226,13 +231,18 @@ may already be loaded or launchd may still be holding the old job. Try:
 EOF
     exit 1
   fi
+  /bin/launchctl kickstart -k "system/$LABEL"
   print "Started $LABEL"
 else
-  print "Not started. To enable now:"
-  print "  sudo launchctl bootstrap system \"$PLIST_FILE\""
+  "$INSTALL_BIN" --config "$CONFIG_FILE" disable >/dev/null 2>&1 || true
+  /bin/launchctl bootout system "$PLIST_FILE" >/dev/null 2>&1 || true
+  print "Manual mode: LaunchDaemon is installed but stopped."
+  print "To start and connect later:"
+  print "  ucdavis-vpnctl on"
+  print "To stop, clean DNS/routes, and unload it:"
+  print "  ucdavis-vpnctl off"
   print ""
-  print "If the service is already loaded, bootstrap can fail with code 5."
-  print "Restart it instead:"
-  print "  sudo launchctl bootout system \"$PLIST_FILE\""
+  print "Manual launchctl start, if needed:"
   print "  sudo launchctl bootstrap system \"$PLIST_FILE\""
+  print "  sudo launchctl kickstart -k \"system/$LABEL\""
 fi

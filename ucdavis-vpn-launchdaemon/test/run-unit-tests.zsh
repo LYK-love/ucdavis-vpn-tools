@@ -24,6 +24,7 @@ assert_eq() {
 CONFIG_FILE="$TMP_DIR/config.env"
 FAKE_PING="$TMP_DIR/fake-ping"
 FAKE_IFCONFIG="$TMP_DIR/fake-ifconfig"
+FAKE_NETWORKSETUP="$TMP_DIR/fake-networksetup"
 cat > "$FAKE_PING" <<'EOF'
 #!/bin/zsh
 target="${@: -1}"
@@ -42,6 +43,45 @@ utun5: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000
 IFCONFIG
 EOF
 chmod 0755 "$FAKE_IFCONFIG"
+cat > "$FAKE_NETWORKSETUP" <<EOF
+#!/bin/zsh
+DNS_STATE_FILE="$TMP_DIR/fake-dns-state"
+case "\$1" in
+  -listallhardwareports)
+    cat <<'PORTS'
+Hardware Port: Wi-Fi
+Device: en0
+PORTS
+    ;;
+  -getinfo)
+    print "Router: 192.0.2.1"
+    ;;
+  -getairportnetwork)
+    print "Current Wi-Fi Network: UnitNet"
+    ;;
+  -getdnsservers)
+    if [[ -s "\$DNS_STATE_FILE" ]]; then
+      cat "\$DNS_STATE_FILE"
+    else
+      print "There aren't any DNS Servers set on Wi-Fi."
+    fi
+    ;;
+  -setdnsservers)
+    shift
+    service="\$1"
+    shift
+    if [[ "\${1:-}" == "empty" || "\${1:-}" == "Empty" ]]; then
+      : > "\$DNS_STATE_FILE"
+    else
+      printf "%s\n" "\$@" > "\$DNS_STATE_FILE"
+    fi
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+chmod 0755 "$FAKE_NETWORKSETUP"
 
 cat > "$CONFIG_FILE" <<EOF
 LABEL=local.ucdavis-openconnect-daemon-test
@@ -57,6 +97,7 @@ PING_COUNT=1
 PING_TIMEOUT_MS=200
 PING_BIN=$FAKE_PING
 IFCONFIG_BIN=$FAKE_IFCONFIG
+NETWORKSETUP_BIN=$FAKE_NETWORKSETUP
 HEALTH_CHECK_MODE=ping
 TCP_TARGET=
 TCP_PORT=22
@@ -70,9 +111,14 @@ GUI_SESSION_POLL_SECONDS=1
 MAX_BROWSER_SESSION_ATTEMPTS=2
 CONTROL_POLL_SECONDS=1
 PRESERVE_DEFAULT_ROUTE=1
+RESTORE_PHYSICAL_DNS=1
+DNS_CACHE_FLUSH_ON_RESTORE=0
+UC_DAVIS_DNS_SERVERS="169.237.250.250 169.237.1.250"
 DEFAULT_ROUTE_RESTORE_DELAY_SECONDS=0
 DEFAULT_ROUTE_RESTORE_ATTEMPTS=2
 DEFAULT_ROUTE_RESTORE_POLL_SECONDS=0
+POST_CONNECT_ROUTE_GUARD_SECONDS=1
+POST_CONNECT_ROUTE_GUARD_POLL_SECONDS=1
 NETWORK_CHANGE_DETECT=1
 NETWORK_CHANGE_SETTLE_SECONDS=0
 NETWORK_CHANGE_BYPASS_COOLDOWN=1
@@ -122,6 +168,18 @@ is_proxy_fake_ip 198.18.0.60 || fail "198.18/15 should be treated as proxy fake-
 is_proxy_fake_ip 198.19.255.1 || fail "198.19/15 should be treated as proxy fake-ip"
 is_proxy_fake_ip 198.20.0.1 && fail "non-198.18/15 should not be treated as proxy fake-ip"
 assert_eq "utun4 172.25.228.36" "$(vpn_internal_ip)" "VPN IP should come from OpenConnect utun, not hotspot en0 or Clash fake-ip"
+
+: > "$TMP_DIR/fake-dns-state"
+remember_physical_dns "192.0.2.1|en0" >/dev/null
+"$FAKE_NETWORKSETUP" -setdnsservers Wi-Fi 169.237.250.250 169.237.1.250
+restore_physical_dns >/dev/null
+assert_eq "" "$("$FAKE_NETWORKSETUP" -getdnsservers Wi-Fi | /usr/bin/awk '!/^There / { print }')" "UC Davis DNS should restore to DHCP/empty"
+
+"$FAKE_NETWORKSETUP" -setdnsservers Wi-Fi 1.1.1.1 8.8.8.8
+remember_physical_dns "192.0.2.1|en0" >/dev/null
+"$FAKE_NETWORKSETUP" -setdnsservers Wi-Fi 169.237.250.250 169.237.1.250
+restore_physical_dns >/dev/null
+assert_eq $'1.1.1.1\n8.8.8.8' "$("$FAKE_NETWORKSETUP" -getdnsservers Wi-Fi)" "DNS should restore saved custom servers"
 
 route_get() {
   case "$1" in
@@ -202,6 +260,7 @@ print -r -- "$status_output" | /usr/bin/grep -q "UC Davis VPN:" || fail "ctl sta
 print -r -- "$status_output" | /usr/bin/grep -q "Browser login:" || fail "ctl status should include browser budget"
 print -r -- "$status_output" | /usr/bin/grep -q "Auto reconnect:" || fail "ctl status should include auto state"
 print -r -- "$status_output" | /usr/bin/grep -q "Internet route:" || fail "ctl status should include default route"
+print -r -- "$status_output" | /usr/bin/grep -q "DNS:" || fail "ctl status should include DNS state"
 print -r -- "$status_output" | /usr/bin/grep -q "Campus routes:" || fail "ctl status should include split routes"
 print -r -- "$status_output" | /usr/bin/grep -q "Check:" || fail "ctl status should include health state"
 

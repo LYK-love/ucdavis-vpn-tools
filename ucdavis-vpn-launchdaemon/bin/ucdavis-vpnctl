@@ -88,6 +88,41 @@ Recent logs:
 EOF
 }
 
+launchdaemon_loaded() {
+  /bin/launchctl print "system/$LABEL" >/dev/null 2>&1
+}
+
+wait_for_control_dir() {
+  local waited=0
+  while (( waited < 10 )); do
+    [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]] && return 0
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
+start_root_daemon() {
+  require_root_daemon_bin || return 1
+  if ! launchdaemon_loaded; then
+    print "LaunchDaemon: starting"
+    /usr/bin/sudo /bin/launchctl bootstrap system "$PLIST_FILE" 2>/dev/null || true
+  fi
+  /usr/bin/sudo /bin/launchctl kickstart -k "system/$LABEL"
+  wait_for_control_dir || {
+    print -u2 "VPN daemon did not open its control socket in time."
+    print_launchdaemon_help
+    return 1
+  }
+}
+
+stop_root_daemon() {
+  if launchdaemon_loaded; then
+    /usr/bin/sudo /bin/launchctl bootout system "$PLIST_FILE" >/dev/null 2>&1 || true
+    print "LaunchDaemon: stopped"
+  fi
+}
+
 require_root_daemon_bin() {
   if [[ -x "$ROOT_DAEMON_BIN" ]]; then
     return 0
@@ -249,9 +284,18 @@ case "$COMMAND" in
     send_control_request "$COMMAND"
     ;;
   off|disable)
-    send_control_request disable
+    if [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]]; then
+      send_control_request disable
+    else
+      require_root_daemon_bin || exit 1
+      /usr/bin/sudo "$ROOT_DAEMON_BIN" --config "$CONFIG_FILE" disable
+    fi
+    stop_root_daemon
     ;;
   on|enable)
+    if [[ ! -d "$CONTROL_DIR" || ! -w "$CONTROL_DIR" ]]; then
+      start_root_daemon || exit 1
+    fi
     send_control_request enable
     ;;
   *)

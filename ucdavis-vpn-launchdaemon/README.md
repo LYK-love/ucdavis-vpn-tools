@@ -213,6 +213,12 @@ block and starts a fresh attempt:
 `PRESERVE_DEFAULT_ROUTE=1` keeps the macOS default route on the physical network
 after OpenConnect starts. This prevents the VPN route script from temporarily
 turning the tunnel into the machine-wide default internet path.
+`RESTORE_PHYSICAL_DNS=1` records the physical network service DNS before
+connecting and restores it on `disconnect`, `logout`, and `off`. This protects
+against UC Davis DNS servers such as `169.237.250.250` and `169.237.1.250`
+remaining on Wi-Fi after the VPN exits or is interrupted. If `status` reports a
+DNS warning while the VPN is off, run `ucdavis-vpnctl off` once to clear the
+stale DNS and flush the macOS DNS cache.
 `DEFAULT_ROUTE_RESTORE_DELAY_SECONDS` is the first short delay after starting
 OpenConnect, before restoring the physical default route again. Because some VPN
 route scripts can still rewrite the default route after that point,
