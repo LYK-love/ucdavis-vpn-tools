@@ -255,6 +255,7 @@ detect_network_change >/dev/null 2>&1 || fail "network signature change should b
 network_change_summary="$(consume_network_change_pending)"
 [[ "$network_change_summary" == old-gateway* ]] || fail "network change summary should mention old signature"
 
+mkdir -p "$STATE_DIR/control/responses"
 status_output="$("$ROOT_DIR/bin/ucdavis-vpnctl" --config "$CONFIG_FILE" status)"
 print -r -- "$status_output" | /usr/bin/grep -q "UC Davis VPN:" || fail "ctl status should include summary state"
 print -r -- "$status_output" | /usr/bin/grep -q "Browser login:" || fail "ctl status should include browser budget"
@@ -263,5 +264,15 @@ print -r -- "$status_output" | /usr/bin/grep -q "Internet route:" || fail "ctl s
 print -r -- "$status_output" | /usr/bin/grep -q "DNS:" || fail "ctl status should include DNS state"
 print -r -- "$status_output" | /usr/bin/grep -q "Campus routes:" || fail "ctl status should include split routes"
 print -r -- "$status_output" | /usr/bin/grep -q "Check:" || fail "ctl status should include health state"
+[[ -z "$(find "$STATE_DIR/control" -maxdepth 1 -name '*.request' -print)" ]] ||
+  fail "ctl status should ignore stale control dir when LaunchDaemon is not loaded"
+
+set +e
+connect_output="$("$ROOT_DIR/bin/ucdavis-vpnctl" --config "$CONFIG_FILE" connect 2>&1)"
+connect_code=$?
+set -e
+(( connect_code != 0 )) || fail "ctl connect should fail when only stale control dir exists"
+print -r -- "$connect_output" | /usr/bin/grep -q "LaunchDaemon is not loaded" ||
+  fail "ctl connect should explain stale control dir when LaunchDaemon is not loaded"
 
 print "ok"

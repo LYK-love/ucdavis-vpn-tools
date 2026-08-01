@@ -92,10 +92,14 @@ launchdaemon_loaded() {
   /bin/launchctl print "system/$LABEL" >/dev/null 2>&1
 }
 
+control_channel_available() {
+  launchdaemon_loaded && [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]]
+}
+
 wait_for_control_dir() {
   local waited=0
   while (( waited < 10 )); do
-    [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]] && return 0
+    control_channel_available && return 0
     sleep 1
     waited=$(( waited + 1 ))
   done
@@ -107,6 +111,11 @@ start_root_daemon() {
   if ! launchdaemon_loaded; then
     print "LaunchDaemon: starting"
     /usr/bin/sudo /bin/launchctl bootstrap system "$PLIST_FILE" 2>/dev/null || true
+  fi
+  if ! launchdaemon_loaded; then
+    print -u2 "LaunchDaemon is not loaded after bootstrap."
+    print_launchdaemon_help
+    return 1
   fi
   /usr/bin/sudo /bin/launchctl kickstart -k "system/$LABEL"
   wait_for_control_dir || {
@@ -212,8 +221,11 @@ response_exit() {
 send_control_request() {
   local command="$1"
   local id request tmp response waited timeout code output
-  [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]] || {
+  control_channel_available || {
     print -u2 "VPN daemon is not accepting commands."
+    if ! launchdaemon_loaded; then
+      print -u2 "LaunchDaemon is not loaded; stale control files may be present."
+    fi
     print -u2 "Check:"
     print -u2 "  $PROGRAM_NAME doctor"
     print -u2 "  launchctl print system/$LABEL"
@@ -267,7 +279,7 @@ case "$COMMAND" in
     ;;
   status)
     require_root_daemon_bin || exit 1
-    if [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]]; then
+    if control_channel_available; then
       send_control_request status
     else
       "$ROOT_DAEMON_BIN" --config "$CONFIG_FILE" status
@@ -284,7 +296,7 @@ case "$COMMAND" in
     send_control_request "$COMMAND"
     ;;
   off|disable)
-    if [[ -d "$CONTROL_DIR" && -w "$CONTROL_DIR" ]]; then
+    if control_channel_available; then
       send_control_request disable
     else
       require_root_daemon_bin || exit 1
@@ -293,7 +305,7 @@ case "$COMMAND" in
     stop_root_daemon
     ;;
   on|enable)
-    if [[ ! -d "$CONTROL_DIR" || ! -w "$CONTROL_DIR" ]]; then
+    if ! control_channel_available; then
       start_root_daemon || exit 1
     fi
     send_control_request enable
